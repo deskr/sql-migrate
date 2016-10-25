@@ -134,18 +134,28 @@ var MigrationDialects = map[string]gorp.Dialect{
 }
 
 type MigrationSource interface {
+	MigrationIDPrefixer
 	// Finds the migrations.
 	//
 	// The resulting slice of migrations should be sorted by Id.
 	FindMigrations() ([]*Migration, error)
 }
 
+type MigrationIDPrefixer interface {
+	GetIDPrefix() string
+}
+
 // A hardcoded set of migrations, in-memory.
 type MemoryMigrationSource struct {
 	Migrations []*Migration
+	IDPrefix   string
 }
 
 var _ MigrationSource = (*MemoryMigrationSource)(nil)
+
+func (m MemoryMigrationSource) GetIDPrefix() string {
+	return m.IDPrefix
+}
 
 func (m MemoryMigrationSource) FindMigrations() ([]*Migration, error) {
 	// Make sure migrations are sorted
@@ -156,10 +166,15 @@ func (m MemoryMigrationSource) FindMigrations() ([]*Migration, error) {
 
 // A set of migrations loaded from a directory.
 type FileMigrationSource struct {
-	Dir string
+	Dir      string
+	IDPrefix string
 }
 
 var _ MigrationSource = (*FileMigrationSource)(nil)
+
+func (m FileMigrationSource) GetIDPrefix() string {
+	return m.IDPrefix
+}
 
 func (f FileMigrationSource) FindMigrations() ([]*Migration, error) {
 	migrations := make([]*Migration, 0)
@@ -206,6 +221,12 @@ type AssetMigrationSource struct {
 
 	// Path in the bindata to use.
 	Dir string
+
+	IDPrefix string
+}
+
+func (m AssetMigrationSource) GetIDPrefix() string {
+	return m.IDPrefix
 }
 
 var _ MigrationSource = (*AssetMigrationSource)(nil)
@@ -297,7 +318,7 @@ func ExecMax(db *sql.DB, dialect string, m MigrationSource, dir MigrationDirecti
 
 		if dir == Up {
 			err = trans.Insert(&MigrationRecord{
-				Id:        migration.Id,
+				Id:        fmt.Sprintf("%s%s", m.GetIDPrefix(), migration.Id),
 				AppliedAt: time.Now(),
 			})
 			if err != nil {
@@ -337,7 +358,13 @@ func PlanMigration(db *sql.DB, dialect string, m MigrationSource, dir MigrationD
 	}
 
 	var migrationRecords []MigrationRecord
-	_, err = dbMap.Select(&migrationRecords, fmt.Sprintf("SELECT * FROM %s", getTableName()))
+	idPrefix := m.GetIDPrefix()
+	if idPrefix == "" {
+		_, err = dbMap.Select(&migrationRecords, fmt.Sprintf("SELECT * FROM %s", getTableName()))
+	} else {
+		_, err = dbMap.Select(&migrationRecords, fmt.Sprintf("SELECT * FROM %s WHERE id LIKE '%s%%'", getTableName(), idPrefix))
+	}
+
 	if err != nil {
 		return nil, nil, err
 	}
@@ -372,7 +399,6 @@ func PlanMigration(db *sql.DB, dialect string, m MigrationSource, dir MigrationD
 		toApplyCount = max
 	}
 	for _, v := range toApply[0:toApplyCount] {
-
 		if dir == Up {
 			result = append(result, &PlannedMigration{
 				Migration: v,
