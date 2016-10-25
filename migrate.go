@@ -372,6 +372,9 @@ func PlanMigration(db *sql.DB, dialect string, m MigrationSource, dir MigrationD
 	// Sort migrations that have been run by Id.
 	var existingMigrations []*Migration
 	for _, migrationRecord := range migrationRecords {
+		if idPrefix != "" {
+			migrationRecord.Id = strings.TrimPrefix(migrationRecord.Id, idPrefix)
+		}
 		existingMigrations = append(existingMigrations, &Migration{
 			Id: migrationRecord.Id,
 		})
