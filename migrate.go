@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+	"net/http"
 	"path"
 	"regexp"
 	"sort"
@@ -160,6 +160,18 @@ func (m MemoryMigrationSource) FindMigrations() ([]*Migration, error) {
 	return m.Migrations, nil
 }
 
+// A set of migrations loaded from an http.FileServer
+
+type HttpFileSystemMigrationSource struct {
+	FileSystem http.FileSystem
+}
+
+var _ MigrationSource = (*HttpFileSystemMigrationSource)(nil)
+
+func (f HttpFileSystemMigrationSource) FindMigrations() ([]*Migration, error) {
+	return findMigrations(f.FileSystem)
+}
+
 // A set of migrations loaded from a directory.
 type FileMigrationSource struct {
 	Dir      string
@@ -173,9 +185,14 @@ func (m FileMigrationSource) GetIDPrefix() string {
 }
 
 func (f FileMigrationSource) FindMigrations() ([]*Migration, error) {
+	filesystem := http.Dir(f.Dir)
+	return findMigrations(filesystem)
+}
+
+func findMigrations(dir http.FileSystem) ([]*Migration, error) {
 	migrations := make([]*Migration, 0)
 
-	file, err := os.Open(f.Dir)
+	file, err := dir.Open("/")
 	if err != nil {
 		return nil, err
 	}
@@ -187,14 +204,14 @@ func (f FileMigrationSource) FindMigrations() ([]*Migration, error) {
 
 	for _, info := range files {
 		if strings.HasSuffix(info.Name(), ".sql") {
-			file, err := os.Open(path.Join(f.Dir, info.Name()))
+			file, err := dir.Open(info.Name())
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("Error while opening %s: %s", info.Name(), err)
 			}
 
 			migration, err := ParseMigration(info.Name(), file)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("Error while parsing %s: %s", info.Name(), err)
 			}
 
 			migrations = append(migrations, migration)
@@ -265,7 +282,7 @@ func ParseMigration(id string, r io.ReadSeeker) (*Migration, error) {
 
 	parsed, err := sqlparse.ParseMigration(r)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Error parsing migration (%s): %s", id, err)
 	}
 
 	m.Up = parsed.UpStatements
@@ -325,22 +342,31 @@ func ExecMax(db *sql.DB, dialect string, m MigrationSource, dir MigrationDirecti
 			}
 		}
 
-		if dir == Up {
+		switch dir {
+		case Up:
 			err = executor.Insert(&MigrationRecord{
 				Id:        fmt.Sprintf("%s%s", m.GetIDPrefix(), migration.Id),
 				AppliedAt: time.Now(),
 			})
 			if err != nil {
+				if trans, ok := executor.(*gorp.Transaction); ok {
+					trans.Rollback()
+				}
+
 				return applied, newTxError(migration, err)
 			}
-		} else if dir == Down {
+		case Down:
 			_, err := executor.Delete(&MigrationRecord{
 				Id: migration.Id,
 			})
 			if err != nil {
+				if trans, ok := executor.(*gorp.Transaction); ok {
+					trans.Rollback()
+				}
+
 				return applied, newTxError(migration, err)
 			}
-		} else {
+		default:
 			panic("Not possible")
 		}
 
@@ -510,7 +536,8 @@ func getMigrationDbMap(db *sql.DB, dialect string) (*gorp.DbMap, error) {
 		var out *time.Time
 		err := db.QueryRow("SELECT NOW()").Scan(&out)
 		if err != nil {
-			if err.Error() == "sql: Scan error on column index 0: unsupported driver -> Scan pair: []uint8 -> *time.Time" {
+			if err.Error() == "sql: Scan error on column index 0: unsupported driver -> Scan pair: []uint8 -> *time.Time" ||
+				err.Error() == "sql: Scan error on column index 0: unsupported Scan, storing driver.Value type []uint8 into type *time.Time" {
 				return nil, errors.New(`Cannot parse dates.
 
 Make sure that the parseTime option is supplied to your database connection.
