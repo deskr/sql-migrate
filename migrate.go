@@ -164,12 +164,17 @@ func (m MemoryMigrationSource) FindMigrations() ([]*Migration, error) {
 
 type HttpFileSystemMigrationSource struct {
 	FileSystem http.FileSystem
+	IDPrefix   string
 }
 
 var _ MigrationSource = (*HttpFileSystemMigrationSource)(nil)
 
 func (f HttpFileSystemMigrationSource) FindMigrations() ([]*Migration, error) {
 	return findMigrations(f.FileSystem)
+}
+
+func (f HttpFileSystemMigrationSource) GetIDPrefix() string {
+	return f.IDPrefix
 }
 
 // A set of migrations loaded from a directory.
